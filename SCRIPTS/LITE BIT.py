@@ -1,5 +1,5 @@
 # REQUIRES: requests, brotli, telethon
-
+#<bot>:@litebits_faucet_bot
 import requests
 import time
 import random
