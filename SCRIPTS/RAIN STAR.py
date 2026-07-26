@@ -1,3 +1,4 @@
+# REQUIRES: requests, telethon
 import asyncio
 import urllib.parse
 import requests
